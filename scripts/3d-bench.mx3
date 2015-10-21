@@ -1,12 +1,12 @@
-// Standard problem #4, modified to test 3D problem
+// Standard problem #4, modified for 3D problem
 //
-// The bigger the problem, the longer the demagnetisation kernel calculation takes, which is CPU intensive (CPU stage)
-// With the Inno3D 980Ti hybrid at the biggest possible problems, the CPU stage uses no more than 8GB and doesn't take long
+// The bigger the problem, the longer the CPU stage takes
+// With the 980Ti at the biggest possible problems, the CPU stage uses no more than 8GB and doesn't take long
 // If running lots of small simulations, the CPU stage becomes much more significant
 //
 // to-do:
 // * Add in loop to test all different sizes etc
-// * Where is all that CPU and RAM load going? I thought this was supposed to be a GPU calculation?
+// * Where is all that CPU and RAM load going?
 //
 // 512x512x512 - failed, crashes system
 // 256x256x256 - 5134MB, 99% - 16.8mil cells
@@ -27,21 +27,27 @@
 // 512x512x8   - 866MB, 99% - 2mil cells
 // 2048x2048x5 - 5809MB, 99% - 21mil cells
 
+// Performance tests - Shows linear dependance of runtime on number of cells
+// 256x256x2   - 0.13mil cells, 5 mins
+// 256x256x8   - 0.52mil cells, 23 mins
+// 256x256x16  - 1.05mil cells, 46 mins
+// 256x256x32  - 2.10mil cells, 89 mins
+// 256x256x256 - 16.8mil cells, 830 mins
+
 SnapshotFormat = "png"
 
-// Set each cell to 1nm in size (smallest possible size, continuous medium approximation etc.)
-cell := 1e-9
+// 128x128x128 cells, each cell 1nm in size
+gr := 0
+ce := 1e-9
 
-SetGridsize(256, 256, 16)
-SetCellsize(cell, cell, cell)
+SetGridsize(256, 256, 256)
+SetCellsize(ce, ce, ce)
 
-// Standard problem #4 set up, http://www.ctcms.nist.gov/~rdm/mumag.org.html
 Msat  = 800e3
 Aex   = 13e-12
 alpha = 0.02
 m = uniform(1, 1, 1)
 B_ext = vector(-24.6E-3, 4.3E-3, 0)
 
-// Take a picture of the magnetisation every femtosecond, used to make videos
 autosnapshot(m, 1e-12)
 run(1.2e-9)
