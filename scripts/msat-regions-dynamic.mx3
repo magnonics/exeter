@@ -1,0 +1,151 @@
+// Permalloy square with MSat distribution calculated from 1000 pulse dense
+// MSat distribution calculated using Bloch's law
+
+//Model parameters:
+ModelSize := 10e-6
+// Large enough to avoid dynamics from neighbouring PBC
+N := 2048
+Nz := 2
+Nc := ModelSize/N
+// 1x20nm cell is approximately equivalent to 4x5nm cells. Has been tested
+Nc_z := 10e-9
+pbc  := 4
+// Room temperature, same as used in heat simulation, 20 celsisus
+T0   := 293.15
+// Bias field strength in tesla, 100 Oe = 0.01 T = 10 mT
+biasStr := 0.05
+// Bias field angle out of plane in radians, 0->0.5 = 0-90 deg
+biasAngle := 0.4
+// Temperature scaling factor, 1.96 maximum before MSat = 0
+Tscale := 1
+
+//Mesh:
+setgridsize(N, N, Nz)
+setcellsize(Nc, Nc, Nc_z)
+setpbc(pbc, pbc, 0)
+
+//Dynamic parameters:
+// Power of sinc pulse in tesla, 3mT. Based on previous results. Remember the pulse power is spread over the frequency range, 2x frequency range = 1/2 pulse power
+pulsePower := 3e-3
+// Frequency range of sinc pulse
+pulseFreq := 10e9
+// Time at which the pulse starts in seconds, 20ns. Based on previous results, gives plenty of time for sinc pulse to wind up and down
+pulseDelay := 5e-9
+// Sampling frequency in Hz, 20 GHz cutoff frequency, 25 ps sampling period. Seems a reasonable cutoff based on 10GHz sinc stimulation and previous results
+sampleFreq  := 40e9
+samplePeriod  := 1/sampleFreq
+// Number of .ovf files to save, increases simulation time, so increases Fourier resolution, use a power of 2 for faster Fourier transforms in analysis. 4096 for a 0.01GHz Fourier resolution and based on dynamics in previous results
+sampleNum := 1024
+// Duration and rate of snapshots, after 10ns dynamics are small, 2ps for smooth 60 fps videos of reasonable length
+snapshotInterval := 10e-9
+snapshotPeriod := 2e-12
+// PNG format compresses better and is lossless, at least for this simulation
+snapshotFormat = "png"
+
+
+//Material parameters for permalloy:
+// Permalloy in Exeter has this MSat at room temperature
+MSat293 := 8e5
+// Exchange constant, Cex := Aex/MSat293^2, Aex = 13e-12 from mumax examples
+Cex  := 13e-22/64
+// Lowest reasonable damping for permalloy, cite Volodymyr
+alpha = 0.008
+// Curie temperature from weighted average of iron and nickel
+Tc   := 710
+
+// Lorentzian temperature distribution - Fitted 1000 pulse 20nm 20mw dense
+// Gives temperature as a function of radial distance in metres
+// Included temperature scaling factor, increases peak temperature
+a := 2.5710575232e-4 * Tscale
+w := 2.63257298e-6
+
+// Using Bloch's law, defining MSat at 0K based on desired room temperature MSat
+MSat0 := MSat293 / (1 - pow(T0/Tc, 1.5))
+
+// Calculating maximum and minimum temperatures
+TMax := T0 + 2*a/(pi*w)
+TMin := T0 + 2*a/pi * w/(4*pow(ModelSize/2, 2) + pow(w, 2))
+
+// Calculating maximum and minimum magnetisation saturation
+MSatMax := MSat0 * (1 - pow(TMin/Tc, 1.5))
+MSatMin := max(MSat0 * (1 - pow(TMax/Tc, 1.5)), 0)
+// Magnetisation step, note that 0th region is reserved for square edges
+MSatStep := (MSatMax - MSatMin)/255
+
+// Setting MSat and Aex at room temperature = T0
+MSat = MSatMax
+Aex = Cex*pow(MSatMax, 2)
+
+// Defining MSat in circular regions and modifying the exchange stiffness (Aex) to ensure the exchange constant (Cex) is kept constant
+for i:=1; i<256; i++{
+  DefRegion(i, circle(sqrt(a*w/(2*pi*(Tc * pow((1 - (MSatMax-(i-1)*MSatStep)/MSat0), (2/3)) - T0)) - pow(w, 2)/4)).sub(circle(sqrt(a*w/(2*pi*(Tc * pow((1 - (MSatMax-(i)*MSatStep)/MSat0), (2/3)) - T0)) - pow(w, 2)/4))))
+  MSat.SetRegion(i, (MSatMax - i*MSatStep))
+  Aex.SetRegion(i, Cex*pow((MSatMax - i*MSatStep),2))
+}
+// Save pics of magnetisation saturation and exchange stiffness distributions
+snapshot(MSat)
+snapshot(Aex)
+
+// Defining table quantities
+// Saving average full & normalised magnetisaton, maximum spin angle between neighbours, last solver error and duration of the time step
+tableAdd(m_full)
+tableAdd(maxAngle)
+tableAdd(lastErr)
+tableAdd(dt)
+
+//Finding static state (no dynamics)
+// Bias field along x & z (in -> out of plane, biasAngle)
+B_ext = vector(biasStr*cos(biasAngle*pi), 0, biasStr*sin(biasAngle*pi))
+// Initial magnetisation - Uniform and orientated along x-axis
+m = uniform(1, 0, 0)
+// Relax the system and save, ready for background subtraction in analysis
+relax()
+saveas(m_full, "static.stc")
+
+//Finding initial dynamic state
+// Bias field along x & z (in -> out of plane, biasAngle), sinc pulse along y with bandwidth of pulseFreq
+B_ext = vector(biasStr*cos(biasAngle*pi), pulsePower * sinc(2 * pi * pulseFreq * (t - pulseDelay)), biasStr*sin(biasAngle*pi))
+// Relax and save, initial dynamic state
+relax()
+save(m_full)
+// Save the table as often as possible, saves at nearest time step
+tableautosave(1e-30)
+
+//Run:
+// Limit maximum timestep to the sampling period, to ensure that we save our samples at uniform times
+MaxDt = samplePeriod
+// Manual autosave loop: Saves precisely at the samplePeriod (all samples are at uniform times, good for Fourier transforms) and takes snapshots for a particular time interval
+// Finds the period number (i in the loop below) to start and stop snapshots
+// Starting one snapshotPeriod before the pulse
+snapshotStart := floor(pulseDelay/samplePeriod - 1)
+snapshotStop := ceil((pulseDelay + snapshotInterval)/samplePeriod)
+
+for i:=0; i<sampleNum; i++{
+  run(samplePeriod)
+  save(m_full)
+  // Outputing snapshots over time interval of interest
+  if i == snapshotStart {
+    print("Start snapshots")
+    // Required to prevent stuttering in output frames
+    MaxDt = snapshotPeriod
+    // Bias field is orientated along x, so nothing much to see
+    snapshot(m_full.Comp(0))
+    // Components of magnetisation that are interesting
+    autosnapshot(m_full.Comp(1), snapshotPeriod)
+    autosnapshot(m_full.Comp(2), snapshotPeriod)
+    // Some other visible and useful quantities
+    autosnapshot(Edens_total, snapshotPeriod)
+    autosnapshot(Edens_exch, snapshotPeriod)
+    autosnapshot(spinAngle, snapshotPeriod)
+  }
+  // Stop taking snapshots after the snapshotInterval has passed
+  if i == snapshotStop {
+    print("Stop snapshots")
+    MaxDt = samplePeriod
+    autosnapshot(m_full.Comp(1), 0)
+    autosnapshot(m_full.Comp(2), 0)
+    autosnapshot(Edens_total, 0)
+    autosnapshot(Edens_exch, 0)
+    autosnapshot(spinAngle, 0)
+  }
+}
